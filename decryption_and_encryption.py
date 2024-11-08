@@ -1,4 +1,7 @@
+import hashlib
 import os
+import random
+import string
 import subprocess
 
 import pandas as pd
@@ -6,6 +9,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
+
+chosenFileForEncryption = None
 
 def chooseFileForDecryption():
     file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
@@ -16,6 +21,20 @@ def chooseFileForDecryption():
     else:
         file_label.set("Файл для расшифровки не выбран!")
         messagebox.showinfo("Предупреждение","Файл для расшифровки не выбран!")
+
+def chooseFileForEncryption():
+    global chosenFileForEncryption
+    chosenFileForEncryption = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
+    
+    if chosenFileForEncryption:
+        file_name = os.path.basename(chosenFileForEncryption)
+        encrypt_file_label.set(f"Выбранный для шифрования файл: {file_name}")
+        
+        for button in (sha1_button, sha256_button, sha512_button, md5_button):
+            button.config(state=tk.NORMAL)
+    else:
+        encrypt_file_label.set("Файл для шифрования не выбран!")
+        messagebox.showinfo("Предупреждение", "Файл для шифрования не выбран!")
 
 def retrieveHashData(file_path):
     df = pd.read_excel(file_path)
@@ -46,22 +65,7 @@ def executeHashcat(file_path):
 
     return output_file
 
-def applySaltForDecryption(file_path, decryptedfile_path):
-    output_phones_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decoded_numbers.xlsx")
-
-    df = pd.read_excel(file_path)
-    known_numbers = df.iloc[:, 2].dropna().astype(str).tolist()
-    print(f"Debug data from excel: {known_numbers}")
-    known_numbers = [int(float(num)) if '.' in num else int(num) for num in known_numbers]
-    print(f"Known numbers: {known_numbers}")
-
-    decrypted_numbers = {}
-    with open(decryptedfile_path, 'r') as file:
-        for line in file:
-            hash_value, decrypted_num = line.strip().split(':')
-            decrypted_numbers[hash_value] = decrypted_num
-
-    def findSalts(known_numbers, decrypted_numbers):
+def findSalts(known_numbers, decrypted_numbers):
         possible_salts = set()
         for decrypted in decrypted_numbers.values():
             try:
@@ -75,6 +79,21 @@ def applySaltForDecryption(file_path, decryptedfile_path):
             except ValueError:
                 continue
         return list(possible_salts)
+
+def applySaltForDecryption(file_path, decryptedfile_path):
+    output_phones_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decoded_numbers.xlsx")
+
+    df = pd.read_excel(file_path)
+    known_numbers = df.iloc[:, 2].dropna().astype(str).tolist()
+    print(f"Debug data`s type from excel: {known_numbers}")
+    known_numbers = [int(float(num)) if '.' in num else int(num) for num in known_numbers]
+    print(f"Known numbers: {known_numbers}")
+
+    decrypted_numbers = {}
+    with open(decryptedfile_path, 'r') as file:
+        for line in file:
+            hash_value, decrypted_num = line.strip().split(':')
+            decrypted_numbers[hash_value] = decrypted_num
 
     salts = findSalts(known_numbers, decrypted_numbers)
     if not salts:
@@ -113,8 +132,7 @@ def applySaltForDecryption(file_path, decryptedfile_path):
             salts_df = pd.DataFrame({"Соли": salts})
             salts_df.to_excel(writer, index=False)
 
-        messagebox.showinfo("Вывод", f"Найдено несколько солей! Расшифровка не проводилась. Значения сохранены в phones.xlsx")
-
+        messagebox.showinfo("Вывод", f"Найдено несколько солей! Расшифровка не проводилась. Значения сохранены в decoded_numbers.xlsx")
 
 def initiateDecryptionProcess():
     selected_file_path = file_label.get().replace("Выбранный для расшифровки файл: ", "")
@@ -122,8 +140,77 @@ def initiateDecryptionProcess():
     applySaltForDecryption(selected_file_path, decrypted_output_path)  
 
 
+def generateSalt(salt_length):
+    salt_characters = string.ascii_letters + string.digits
+    return ''.join(random.choices(salt_characters, k=salt_length))
+
+def encryptPhoneNumbers(hash_function, salt_length, salt_type='random'):
+    data_frame = pd.read_excel(chosenFileForEncryption)
+    phone_list = data_frame.iloc[:, 1].dropna().astype(str).tolist()
+    
+    #salt_length = 2
+    salt_value = generateSalt(salt_length) if salt_type == 'random' else salt_type
+    hashcat_pattern = f"{'?d' * 11}{'?a' * salt_length}"
+    
+    hash_file_path = os.path.join('hashcat-6.2.6', 'hashes.txt')
+    os.makedirs(os.path.dirname(hash_file_path), exist_ok=True)
+
+    with open(hash_file_path, 'w') as hash_file:
+        hashed_entries = [
+            {"Хеш": hash_function((phone_number + salt_value).encode()).hexdigest(), "Исходный номер": phone_number}
+            for phone_number in phone_list
+        ]
+        hash_file.writelines(f"{entry['Хеш']}\n" for entry in hashed_entries)
+
+    # подготовка данных для сохранения в Excel
+    algorithm_title = hash_function.__name__.lower().replace('openssl_', '')
+    hashcat_mode_code = {'md5': 0, 'sha1': 100, 'sha256': 1400, 'sha512': 1700}.get(algorithm_title, 'unknown')
+    hashcat_command_str = f"hashcat -m {hashcat_mode_code} -a 3 -o found.txt hashes.txt {hashcat_pattern}"
+    
+    hashed_data_frame = pd.DataFrame(hashed_entries)
+    hashed_data_frame.at[0, 'Соль'] = salt_value
+    hashed_data_frame.at[0, 'Код hashcat'] = hashcat_command_str
+
+    output_filename = f"phones_{algorithm_title}.xlsx"
+    output_filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), output_filename)
+    hashed_data_frame.to_excel(output_filepath, index=False)
+
+    workbook_instance = load_workbook(output_filepath)
+    worksheet_instance = workbook_instance.active
+    for col in worksheet_instance.columns:
+        max_width = max(len(str(cell.value)) for cell in col if cell.value) + 2
+        worksheet_instance.column_dimensions[col[0].column_letter].width = max_width
+
+    workbook_instance.save(output_filepath)
+    messagebox.showinfo("Вывод", f"Зашифрованные мобильные номера сохранены в {output_filename}")
+
+salt_length = 2
+
+def hash_SHA1():
+    encryptPhoneNumbers(hashlib.sha1, salt_length)
+
+def hash_SHA256():
+    encryptPhoneNumbers(hashlib.sha256, salt_length)
+
+def hash_SHA512():
+    encryptPhoneNumbers(hashlib.sha512, salt_length)
+
+def hash_MD5():
+    encryptPhoneNumbers(hashlib.md5, salt_length) 
+
+
+def setWindow(window):
+    window.update_idletasks()
+    width = window.winfo_width()
+    height = window.winfo_height()
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    window.geometry(f'{width}x{height}+{x}+{y}')
+
 root = tk.Tk()
-root.title("Телефонные номера: Расшифровка")
+root.title("Телефонные номера: Шифрование и Расшифровка")
 root.configure(bg="#F3F4F6")
 
 # Стили
@@ -139,11 +226,18 @@ file_label = tk.StringVar(value="Файл для расшифровки: не в
 file_label_display = ttk.Label(frame_files, textvariable=file_label)
 file_label_display.grid(row=0, column=0, sticky="w", padx=5, pady=5)
 
+encrypt_file_label = tk.StringVar(value="Файл для шифрования: не выбран")
+encrypt_file_label_display = ttk.Label(frame_files, textvariable=encrypt_file_label)
+encrypt_file_label_display.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+
 frame_buttons_top = ttk.Frame(root, padding=10)
 frame_buttons_top.grid(row=1, column=0, sticky="ew")
 
 btn_select_file = ttk.Button(frame_buttons_top, text="Выбрать файл для расшифровки", command=chooseFileForDecryption)
 btn_select_file.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+
+btn_select_file_for_encryption = ttk.Button(frame_buttons_top, text="Выбрать файл для шифрования", command=chooseFileForEncryption)
+btn_select_file_for_encryption.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
 frame_buttons_main = ttk.Frame(root, padding=10)
 frame_buttons_main.grid(row=2, column=0, sticky="ew")
@@ -151,8 +245,21 @@ frame_buttons_main.grid(row=2, column=0, sticky="ew")
 btn_deobfuscate = ttk.Button(frame_buttons_main, text="Расшифровать", command=initiateDecryptionProcess, state=tk.DISABLED)
 btn_deobfuscate.grid(row=0, column=0, padx=80, pady=10, sticky="ew")
 
+md5_button = ttk.Button(frame_buttons_main, text="MD5", command=hash_MD5, width=10, state=tk.DISABLED)
+md5_button.grid(row=0, column=3, padx=5, pady=5)
+
+sha1_button = ttk.Button(frame_buttons_main, text="SHA-1", command=hash_SHA1, width=10, state=tk.DISABLED)
+sha1_button.grid(row=0, column=4, padx=5, pady=5)
+
+sha256_button = ttk.Button(frame_buttons_main, text="SHA-256", command=hash_SHA256, width=10, state=tk.DISABLED)
+sha256_button.grid(row=1, column=3, padx=5, pady=5)
+
+sha512_button = ttk.Button(frame_buttons_main, text="SHA-512", command=hash_SHA512, width=10, state=tk.DISABLED)
+sha512_button.grid(row=1, column=4, padx=5, pady=5)
+
 root.update_idletasks()
-root.geometry('440x200')
+root.geometry('550x290')
+setWindow(root)
 
 root.mainloop()
 
