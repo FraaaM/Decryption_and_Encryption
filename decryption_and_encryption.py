@@ -171,7 +171,7 @@ def encryptPhoneNumbers(hash_function, salt_length, salt_type='random'):
     hashed_data_frame.at[0, 'Соль'] = salt_value
     hashed_data_frame.at[0, 'Код hashcat'] = hashcat_command_str
 
-    output_filename = f"phones_{algorithm_title}.xlsx"
+    output_filename = f"numbers_{algorithm_title}.xlsx"
     output_filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), output_filename)
     hashed_data_frame.to_excel(output_filepath, index=False)
 
@@ -184,7 +184,7 @@ def encryptPhoneNumbers(hash_function, salt_length, salt_type='random'):
     workbook_instance.save(output_filepath)
     messagebox.showinfo("Вывод", f"Зашифрованные мобильные номера сохранены в {output_filename}")
 
-salt_length = 2
+salt_length = 1
 
 def hash_SHA1():
     encryptPhoneNumbers(hashlib.sha1, salt_length)
